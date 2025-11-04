@@ -1,16 +1,26 @@
 from django.contrib.auth.forms import PasswordResetForm
 from django.utils.translation import gettext_lazy as _
 from rest_framework import serializers
-
+from django.core.mail import send_mail
+from django.template.loader import render_to_string
+from django.conf import settings
+from rest_framework.validators import UniqueValidator
 from users.models import User, Follow
+from django_rest_passwordreset.models import ResetPasswordToken
+import random
+from django.core.cache import cache
+from django.contrib.auth import authenticate
 
 
 class UserSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, required=True)
+
     class Meta:
         model = User
         fields = [
             "id",
             "email",
+            "password",         
             "profile_image",
             "followers_count",
             "following_count",
@@ -25,22 +35,11 @@ class UserSerializer(serializers.ModelSerializer):
         ]
 
     def create(self, validated_data):
-        password = validated_data.pop("password", None)
-        user = User.objects.create_user(
-            email=validated_data.get("email"), password=password
-        )
-        profile_image = validated_data.get("profile_image")
-        if profile_image:
-            user.profile_image = profile_image
-            user.save(update_fields=["profile_image"])
+        password = validated_data.pop("password")
+        user = User(**validated_data)
+        user.set_password(password)
+        user.save()
         return user
-
-    def update(self, instance, validated_data):
-        password = validated_data.pop("password", None)
-        if password:
-            instance.set_password(password)
-            instance.save(update_fields=["password"])
-        return super().update(instance, validated_data)
 
 
 class FollowSerializer(serializers.ModelSerializer):
@@ -50,55 +49,101 @@ class FollowSerializer(serializers.ModelSerializer):
         read_only_fields = ["created_at"]
 
 
-class RegisterSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, style={"input_type": "password"})
+class FollowSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Follow
+        fields = ["id", "follower", "followed", "created_at"]
+        read_only_fields = ["created_at"]
+
+
+class SignupSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(
+        write_only=True,
+        min_length=8,
+        style={"input_type": "password"},
+    )
+    confirm_password = serializers.CharField(
+        write_only=True,
+        min_length=8,
+        style={"input_type": "password"},
+    )
+    email = serializers.EmailField(
+        validators=[UniqueValidator(queryset=User.objects.all(), message="Email already registered.")]
+    )
 
     class Meta:
         model = User
-        fields = ("email", "password", "profile_image")
+        fields = [
+            "email",
+            "password",
+            "confirm_password",
+        ]
+
+    def validate(self, attrs):
+        pw = attrs.get("password")
+        pw2 = attrs.get("confirm_password")
+        if pw != pw2:
+            raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
+        return attrs
 
     def create(self, validated_data):
+        validated_data.pop("confirm_password", None)
         password = validated_data.pop("password")
-        user = User.objects.create_user(email=validated_data.get("email"), password=password)
-        profile_image = validated_data.get("profile_image")
-        if profile_image:
-            user.profile_image = profile_image
-            user.save(update_fields=["profile_image"])
+        user = User(**validated_data)
+        user.set_password(password)
+        user.save()
         return user
 
 
-class CustomPasswordResetSerializer(serializers.Serializer):
-    """
-    Simple password reset serializer that uses Django's PasswordResetForm.
-    It accepts an 'email' field and, when validated and saved, triggers
-    Django's password reset email flow (subject to your EMAIL_BACKEND).
-    """
+class ForgotPasswordSerializer(serializers.Serializer):
     email = serializers.EmailField()
 
-    default_error_messages = {
-        "invalid_email": _("No user is associated with this email address.")
-    }
-
     def validate_email(self, value):
-        form = PasswordResetForm(data={"email": value})
-        if not form.is_valid():
-            if not User.objects.filter(email__iexact=value).exists():
-                raise serializers.ValidationError(self.error_messages["invalid_email"])
+        try:
+            user = User.objects.get(email=value)
+        except User.DoesNotExist:
+            raise serializers.ValidationError("User with this email does not exist.")
+        otp = random.randint(1000, 9999)
+        cache.set(f"otp_{user.id}", otp, timeout=600)
         return value
 
-    def save(self, request=None, use_https=False, token_generator=None, from_email=None, email_template_name=None, subject_template_name=None, extra_email_context=None):
-        """
-        Use Django's PasswordResetForm to send the reset email.
-        Parameters mirror Django's PasswordResetForm.save signature.
-        """
-        form = PasswordResetForm(data={"email": self.validated_data["email"]})
-        if form.is_valid():
-            form.save(
-                request=request,
-                use_https=use_https,
-                token_generator=token_generator,
-                from_email=from_email,
-                email_template_name=email_template_name,
-                subject_template_name=subject_template_name,
-                extra_email_context=extra_email_context,
-            )
+
+class VerifyCodeSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    otp = serializers.CharField(max_length=4)
+
+    def validate(self, data):
+        try:
+            user = User.objects.get(email=data["email"])
+        except User.DoesNotExist:
+            raise serializers.ValidationError("Invalid email")
+        cached_otp = cache.get(f"otp_{user.id}")
+        if not cached_otp or str(cached_otp) != str(data["otp"]):
+            raise serializers.ValidationError("Invalid or expired OTP")
+        return data
+
+
+class ResetPasswordSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True, min_length=8)
+
+    def save(self, **kwargs):
+        user = User.objects.get(email=self.validated_data["email"])
+        user.set_password(self.validated_data["password"])
+        user.save()
+        cache.delete(f"otp_{user.id}")
+        return user
+
+
+class LoginSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True)
+
+    def validate(self, data):
+        user = authenticate(email=data["email"], password=data["password"])
+        if not user:
+            raise serializers.ValidationError("Invalid credentials.")
+        if not user.is_active:
+            raise serializers.ValidationError("This account is inactive.")
+        data["user"] = user
+        return data
