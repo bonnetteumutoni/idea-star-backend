@@ -18,13 +18,15 @@ from .serializers import (
     ForgotPasswordSerializer,
     VerifyCodeSerializer,
     ResetPasswordSerializer,
+    ProjectSerializer,
 )
+from rest_framework import viewsets, permissions, parsers
 from users.models import User, Follow
 from django.core.cache import cache
 from django.core.mail import send_mail, BadHeaderError
 from django.conf import settings
 from rest_framework_simplejwt.tokens import AccessToken
-
+from projects.models import Project
 import secrets
 import string
 import smtplib
@@ -161,6 +163,8 @@ class ResetPasswordView(generics.GenericAPIView):
 
         return Response({"message": "Password has been reset successfully"}, status=status.HTTP_200_OK)
 
-
-
-
+class ProjectViewSet(viewsets.ModelViewSet):
+    queryset = Project.objects.all()
+    serializer_class = ProjectSerializer
+    permission_classes = [permissions.AllowAny]  
+    parser_classes = [parsers.MultiPartParser, parsers.FormParser, parsers.JSONParser]

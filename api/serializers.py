@@ -10,7 +10,7 @@ from django_rest_passwordreset.models import ResetPasswordToken
 import random
 from django.core.cache import cache
 from django.contrib.auth import authenticate
-
+from projects.models import Project
 
 class UserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True)
@@ -147,3 +147,9 @@ class LoginSerializer(serializers.Serializer):
             raise serializers.ValidationError("This account is inactive.")
         data["user"] = user
         return data
+
+class ProjectSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Project
+        fields = '__all__'  
+

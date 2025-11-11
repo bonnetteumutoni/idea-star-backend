@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 from django.conf import settings
 from django.conf.urls.static import static
 from rest_framework.authtoken.views import obtain_auth_token
-
+from .views import ProjectViewSet
 from .views import (
     SignupView,
     LoginView,
@@ -15,6 +15,7 @@ from .views import (
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='users')
+router.register(r'projects', ProjectViewSet, basename='project')
 
 urlpatterns = [
     path('', include(router.urls)),
@@ -28,3 +29,6 @@ urlpatterns = [
 
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+
+
+
